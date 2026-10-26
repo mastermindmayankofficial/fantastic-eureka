@@ -1,0 +1,593 @@
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from app.config import DB_PATH
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+ensure_dir(DB_PATH.parent)
+
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    conn = get_conn()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE,
+            username TEXT,
+            first_name TEXT,
+            role TEXT DEFAULT 'normal',
+            search_quota INTEGER DEFAULT 10,
+            request_quota INTEGER DEFAULT 10,
+            banned INTEGER DEFAULT 0,
+            started INTEGER DEFAULT 0,
+            referrer_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            text TEXT DEFAULT '',
+            media_type TEXT DEFAULT '',
+            media_file_id TEXT DEFAULT '',
+            buttons_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS indexed_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            author TEXT,
+            caption TEXT,
+            file_id TEXT,
+            file_type TEXT,
+            indexed_by INTEGER,
+            storage_chat_id TEXT,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            title TEXT,
+            author TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER UNIQUE,
+            chat_type TEXT,
+            title TEXT,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT,
+            details TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_id INTEGER,
+            target TEXT,
+            message TEXT,
+            sent_count INTEGER DEFAULT 0,
+            failed_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def ensure_default_settings() -> None:
+    defaults = {
+        "bot_title": "My Bot",
+        "bot_username": "@mybot",
+        "chat_title": "My Bot Chat",
+        "storage_channel_id": "",
+        "posting_channel_id": "",
+        "request_log_chat_id": "",
+        "general_log_chat_id": "",
+        "max_index_batch": "10",
+        "index_sleep_seconds": "10",
+        "referral_bonus_search": "10",
+        "referral_bonus_request": "10",
+        "file_delete_after_seconds": "120",
+        "allow_dm_delivery": "true",
+        "allow_posting_channel_delivery": "true",
+        "default_help_text": "Welcome to the bot. Use /help for commands.",
+        "admin_help_text": "Admin-only features are available here.",
+    }
+    conn = get_conn()
+    for key, value in defaults.items():
+        exists = conn.execute("SELECT 1 FROM settings WHERE key=?", (key,)).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+    conn.commit()
+    conn.close()
+
+
+def log_action(user_id: int, action: str, details: str = "") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO logs (user_id, action, details) VALUES (?, ?, ?)",
+        (user_id, action, details),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_setting(key: str, value: str) -> None:
+    conn = get_conn()
+    exists = conn.execute("SELECT 1 FROM settings WHERE key=?", (key,)).fetchone()
+    if exists:
+        conn.execute(
+            "UPDATE settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?",
+            (value, key),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_setting(key: str, default: str = "") -> str:
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    conn.close()
+    if row is None:
+        return default
+    return row["value"]
+
+
+def ensure_user(user_id: int, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
+    conn = get_conn()
+    row = conn.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if row is None:
+        conn.execute(
+            """
+            INSERT INTO users (user_id, username, first_name, role, search_quota, request_quota, banned, started)
+            VALUES (?, ?, ?, 'normal', 10, 10, 0, 0)
+            """,
+            (user_id, username or "", first_name or ""),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_user(user_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def set_user_role(user_id: int, role: str) -> None:
+    quota = {
+        "banned": {"search": 0, "request": 0},
+        "normal": {"search": 10, "request": 10},
+        "promoter": {"search": 20, "request": 20},
+        "volunteer": {"search": 30, "request": 30},
+        "moderator": {"search": 40, "request": 40},
+        "admin": {"search": 999999, "request": 999999},
+        "owner": {"search": 999999, "request": 999999},
+    }.get(role.lower(), {"search": 10, "request": 10})
+
+    conn = get_conn()
+    conn.execute(
+        "UPDATE users SET role=?, search_quota=?, request_quota=? WHERE user_id=?",
+        (role.lower(), quota["search"], quota["request"], user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def is_admin_user(user_id: int) -> bool:
+    user = get_user(user_id)
+    if user_id in ADMIN_IDS:
+        return True
+    if user is None:
+        return False
+    return user.get("role") in {"admin", "owner"}
+
+
+def is_owner(user_id: int) -> bool:
+    if user_id in ADMIN_IDS:
+        return True
+    user = get_user(user_id)
+    return bool(user and user.get("role") == "owner")
+
+
+def is_banned(user_id: int) -> bool:
+    user = get_user(user_id)
+    if not user:
+        return False
+    return bool(user.get("banned"))
+
+
+def set_banned(user_id: int, banned: bool) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE users SET banned=? WHERE user_id=?", (1 if banned else 0, user_id))
+    conn.commit()
+    conn.close()
+
+
+def resolve_user_id(value: str) -> Optional[int]:
+    if value.isdigit():
+        return int(value)
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT user_id FROM users WHERE username=?",
+        (value.strip("@"),),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return row["user_id"]
+
+
+def save_chat(chat_id: int, chat_type: str, title: str = "") -> None:
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT INTO chats (chat_id, chat_type, title, active)
+        VALUES (?, ?, ?, 1)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            chat_type = excluded.chat_type,
+            title = excluded.title,
+            active = 1
+        """,
+        (chat_id, chat_type, title),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_users() -> List[Dict[str, Any]]:
+    conn = get_conn()
+    rows = conn.execute("SELECT user_id FROM users WHERE banned=0 ORDER BY user_id").fetchall()
+    conn.close()
+    return [{"user_id": row["user_id"]} for row in rows]
+
+
+def get_all_chats(chat_type: str) -> List[Dict[str, Any]]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT chat_id FROM chats WHERE chat_type=? AND active=1 ORDER BY chat_id",
+        (chat_type,),
+    ).fetchall()
+    conn.close()
+    return [{"chat_id": row["chat_id"]} for row in rows]
+
+
+def get_template(name: str) -> Optional[Dict[str, Any]]:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM templates WHERE name=?", (name,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {
+        "name": row["name"],
+        "text": row["text"] or "",
+        "media_type": row["media_type"] or "",
+        "media_file_id": row["media_file_id"] or "",
+        "buttons": json.loads(row["buttons_json"] or "[]"),
+    }
+
+
+def save_template(name: str, text: str = "", media_type: str = "", media_file_id: str = "", buttons: Optional[List[Dict[str, str]]] = None) -> None:
+    conn = get_conn()
+    buttons_json = json.dumps(buttons or [])
+    existing = conn.execute("SELECT 1 FROM templates WHERE name=?", (name,)).fetchone()
+    if existing:
+        conn.execute(
+            """
+            UPDATE templates
+            SET text=?, media_type=?, media_file_id=?, buttons_json=?, updated_at=CURRENT_TIMESTAMP
+            WHERE name=?
+            """,
+            (text, media_type, media_file_id, buttons_json, name),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO templates (name, text, media_type, media_file_id, buttons_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (name, text, media_type, media_file_id, buttons_json),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_templates() -> List[str]:
+    conn = get_conn()
+    rows = conn.execute("SELECT name FROM templates ORDER BY name").fetchall()
+    conn.close()
+    return [row["name"] for row in rows]
+
+
+def render_placeholders(text: str, bot_title: str = "", bot_username: str = "", chat_title: str = "") -> str:
+    now = datetime.now()
+    rendered = text.replace("{date}", now.strftime("%Y-%m-%d"))
+    rendered = rendered.replace("{time}", now.strftime("%H:%M:%S"))
+    rendered = rendered.replace("{bot_title}", bot_title or get_setting("bot_title", "My Bot"))
+    rendered = rendered.replace("{bot_username}", bot_username or get_setting("bot_username", "@mybot"))
+    rendered = rendered.replace("{chat_title}", chat_title or get_setting("chat_title", "My Bot Chat"))
+    return rendered
+
+
+def build_user_help_text() -> str:
+    return render_placeholders(
+        """
+User Help
+
+Use:
+- /search <keyword> to find indexed files
+- /request <title> <author> to request missing books
+- /help to open this help
+- /stats for basic bot stats if allowed
+
+Quota:
+- Search quota is used only when the file is successfully delivered
+- Request quota is used only when the request is successfully posted
+- Failed actions do not consume quota
+
+Referral:
+- Invite a friend using your referral link
+- both users get +10 search quota and +10 request quota
+- valid for first-time users only
+
+Formatting:
+- Bold: **text**
+- Italic: *text*
+- Spoiler: ||text||
+- Bot title: {bot_title}
+- Bot username: {bot_username}
+- Chat title: {chat_title}
+- Time: {time}
+- Date: {date}
+        """,
+        bot_title=get_setting("bot_title", "My Bot"),
+        bot_username=get_setting("bot_username", "@mybot"),
+        chat_title=get_setting("chat_title", "My Bot Chat"),
+    )
+
+
+def build_admin_help_text() -> str:
+    return render_placeholders(
+        """
+Admin Help
+
+Commands:
+- /adminhelp
+- /stats
+- /ban <user>
+- /unban <user>
+- /addvol <user>
+- /addprom <user>
+- /addmod <user>
+- /addadmin <user>
+- /reloadconfig
+- /setconfig <key> <value>
+- /getconfig <key>
+- /edittext <template_name>
+- /setmedia <template_name>
+- /removemedia <template_name>
+- /addbutton <template_name> <label> <callback>
+- /removebutton <template_name> <index>
+- /listtemplates
+- /showtemplate <template_name>
+- /broadcast user <user_id> <message>
+- /broadcast group <group_id> <message>
+- /broadcast channel <channel_id> <message>
+- /broadcast all_groups <message>
+- /broadcast all_channels <message>
+- /broadcast all_users <message>
+- /broadcast everyone <message>
+
+Formatting:
+- Bold: **text**
+- Italic: *text*
+- Spoiler: ||text||
+- Bot title: {bot_title}
+- Bot username: {bot_username}
+- Chat title: {chat_title}
+- Time: {time}
+- Date: {date}
+        """,
+        bot_title=get_setting("bot_title", "My Bot"),
+        bot_username=get_setting("bot_username", "@mybot"),
+        chat_title=get_setting("chat_title", "My Bot Chat"),
+    )
+
+
+def add_indexed_file(title: str, author: str, caption: str, file_id: str, file_type: str, indexed_by: int, storage_chat_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT INTO indexed_files (title, author, caption, file_id, file_type, indexed_by, storage_chat_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (title, author, caption, file_id, file_type, indexed_by, storage_chat_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def search_indexed_files(keyword: str) -> List[Dict[str, Any]]:
+    q = f"%{keyword.lower()}%"
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT * FROM indexed_files
+        WHERE active = 1
+        AND (
+            LOWER(title) LIKE ? OR LOWER(author) LIKE ? OR LOWER(caption) LIKE ?
+        )
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+        (q, q, q),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_indexed_file_by_id(resource_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM indexed_files WHERE id=?", (resource_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def save_request(user_id: int, title: str, author: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO requests (user_id, title, author, status) VALUES (?, ?, ?, 'pending')",
+        (user_id, title, author),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_requests(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_conn()
+    if status:
+        rows = conn.execute("SELECT * FROM requests WHERE status=? ORDER BY created_at DESC", (status,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM requests ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_request_status(request_id: int, status: str) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE requests SET status=? WHERE id=?", (status, request_id))
+    conn.commit()
+    conn.close()
+
+
+def apply_successful_search_quota(user_id: int) -> None:
+    user = get_user(user_id)
+    if not user or user.get("banned"):
+        return
+    current = int(user.get("search_quota", 0))
+    new_value = max(0, current - 1)
+    conn = get_conn()
+    conn.execute("UPDATE users SET search_quota=? WHERE user_id=?", (new_value, user_id))
+    conn.commit()
+    conn.close()
+
+
+def apply_successful_request_quota(user_id: int) -> None:
+    user = get_user(user_id)
+    if not user or user.get("banned"):
+        return
+    current = int(user.get("request_quota", 0))
+    new_value = max(0, current - 1)
+    conn = get_conn()
+    conn.execute("UPDATE users SET request_quota=? WHERE user_id=?", (new_value, user_id))
+    conn.commit()
+    conn.close()
+
+
+def apply_referral(referrer_id: int, user_id: int) -> None:
+    if referrer_id == user_id:
+        return
+    ref_bonus_search = int(get_setting("referral_bonus_search", "10"))
+    ref_bonus_request = int(get_setting("referral_bonus_request", "10"))
+    for target_user_id in (user_id, referrer_id):
+        current_user = get_user(target_user_id)
+        if not current_user:
+            continue
+        new_search = int(current_user.get("search_quota", 0)) + ref_bonus_search
+        new_request = int(current_user.get("request_quota", 0)) + ref_bonus_request
+        conn = get_conn()
+        conn.execute(
+            "UPDATE users SET search_quota=?, request_quota=? WHERE user_id=?",
+            (new_search, new_request, target_user_id),
+        )
+        conn.commit()
+        conn.close()
+
+    conn = get_conn()
+    conn.execute("UPDATE users SET referrer_id=? WHERE user_id=?", (referrer_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def seed_demo_templates() -> None:
+    if get_template("welcome") is None:
+        save_template(
+            "welcome",
+            text="Welcome to {bot_title}! Use /help for more info.",
+            buttons=[
+                {"label": "Help", "callback": "help:main"},
+                {"label": "Search Demo", "callback": "search_file:1"},
+            ],
+        )
+
+
+# End of db.py
