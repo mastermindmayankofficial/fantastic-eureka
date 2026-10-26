@@ -1,435 +1,195 @@
-# Dynamic Telegram Bot with Admin-Controlled Config
+# fantastic-eureka
 
-A Telegram bot designed for:
-- searchable file indexing
-- request tracking
-- quota-based usage
-- referral bonuses
-- admin-controlled text/media/button configuration
-- temporary file delivery
-- role-based permissions
-- stats and broadcast tools
-
-This bot is intentionally built around a configuration database instead of hardcoded values, so you can change:
-- role quotas
-- help text
-- admin message text
-- media templates
-- button labels
-- button callbacks
-- bot titles and usernames
-- queue limits
-- storage and posting channel IDs
-- referral bonus values
-
-without editing the source code in production.
-
-Important:
-- This is a safe pattern for controlling bot behavior from bot commands.
-- It does NOT allow arbitrary code execution.
-- It does NOT edit Python files directly.
-- It only updates database-backed configuration and templates.
+A Telegram bot for managing ebook/library workflows, request handling, admin controls, and Goodreads-enriched indexing.
 
 ## Features
 
-- Role-based access control
-  - Owner
-  - Admin
-  - Volunteer
-  - Moderator
-  - Promoter
-  - Normal user
-  - Banned user
-- Quota-based usage
-  - search quota and request quota
-  - only consumed on successful action
-- Referral system
-  - +10 search quota and +10 request quota for both users
-- Search and file delivery
-  - search indexed files by title, author, and caption
-  - inline result buttons
-  - file posted to a posting channel
-  - user DM delivery if allowed
-  - auto-delete after configured time
-- Config-driven templates
-  - dynamic text editing
-  - dynamic media saving
-  - dynamic button edits
-- User request tracking
-  - book/audiobook requests
-  - statuses for pending/completed
-- Bot statistics
-  - total users
-  - banned users
-  - group/channel count
-  - storage usage
-  - request totals
-- Broadcast messaging
-  - all users
-  - all groups
-  - all channels
-  - single user
-  - single channel
-  - single group
-- Ban / unban management
-- Admin-only help and tooling
+- Telegram bot with command-based admin tools
+- User onboarding and referral quota tracking
+- Request submission and request logging
+- Template and media management
+- Searchable indexed ebook metadata
+- Auto-enrichment using Goodreads metadata
+- File indexing into a configured storage group
+- SQLite-backed persistence
 
-## Bot architecture
+## Tech Stack
 
-The bot is designed in layers:
+- Python
+- python-telegram-bot
+- SQLite
+- python-dotenv
+- aiohttp
 
-1. Telegram bot layer
-   - receives commands and callbacks
-   - sends messages/media
-   - handles button presses
-
-2. Database layer
-   - stores users
-   - stores settings
-   - stores templates
-   - stores indexed files
-   - stores request records
-   - stores chats and logs
-
-3. Config layer
-   - dynamic settings are loaded from DB
-   - no hardcoded runtime values
-   - admin commands update settings
-
-4. Feature layer
-   - search
-   - request
-   - role assignment
-   - broadcast
-   - stats
-   - file delivery
-   - queue handling
-
-## Role and quota model
-
-Default quota model:
-- banned = 0
-- normal = 10
-- promoter = 20
-- volunteer = 30
-- moderator = 40
-- admin = unlimited
-- owner = unlimited
-
-Role definitions:
-- Promoter: boosted normal user, same general feature set with better quota
-- Volunteer: can index/select files and perform direct indexing tasks
-- Moderator: manages requests and request status
-- Admin: can manage users, roles, logs, config
-- Owner: full access
-
-Quota consumption rules:
-- quota is only consumed after successful action
-- search quota is only consumed when file/media delivery succeeds
-- request quota is only consumed when request is successfully posted
-- failed searches or failed requests do not count
-
-## Database schema
-
-Main tables:
-- users
-- settings
-- templates
-- indexed_files
-- requests
-- chats
-- logs
-
-### users
-- id
-- user_id
-- username
-- first_name
-- role
-- search_quota
-- request_quota
-- banned
-- started
-- referrer_id
-- created_at
-
-### settings
-- key
-- value
-- updated_at
-
-### templates
-- id
-- name
-- text
-- media_type
-- media_file_id
-- buttons_json
-- created_at
-- updated_at
-
-### indexed_files
-- id
-- title
-- author
-- caption
-- file_id
-- file_type
-- indexed_by
-- storage_chat_id
-- active
-- created_at
-
-### requests
-- id
-- user_id
-- title
-- author
-- status
-- created_at
-
-### chats
-- id
-- chat_id
-- chat_type
-- title
-- active
-- created_at
-
-### logs
-- id
-- user_id
-- action
-- details
-- created_at
-
-## Setup
-
-1. Install Python dependencies:
-
-```bash
-pip install python-telegram-bot==20.7
-```
-
-2. Create a Telegram bot:
-- talk to BotFather
-- save the token
-
-3. Set environment variable:
-
-```bash
-export BOT_TOKEN="YOUR_BOT_TOKEN"
-```
-
-4. Set admin IDs in the script:
-
-```python
-ADMIN_IDS = [123456789]
-```
-
-5. Set the storage and posting channels:
-- storage channel ID
-- posting channel ID
-- request log channel/group ID
-- general log group ID
-
-6. Start the bot:
-
-```bash
-python bot.py
-```
-
-## Required configuration values
-
-These are stored in the database and can be edited via bot commands:
-- bot_title
-- bot_username
-- chat_title
-- storage_channel_id
-- posting_channel_id
-- request_log_chat_id
-- general_log_chat_id
-- max_index_batch
-- index_sleep_seconds
-- referral_bonus_search
-- referral_bonus_request
-- file_delete_after_seconds
-- allow_dm_delivery
-- allow_posting_channel_delivery
-
-Example:
-
-```bash
-/setconfig bot_title My Bot
-/setconfig bot_username @mybot
-/setconfig storage_channel_id -1001234567890
-/setconfig posting_channel_id -1006543219876
-```
-
-## User commands
-
-- /start
-- /help
-- /search <keyword>
-- /request <title> <author>
-- /stats
-- /ban <user>
-- /unban <user>
-- /addvol <user>
-- /addprom <user>
-- /addmod <user>
-- /addadmin <user>
-
-## Admin commands
-
-- /adminhelp
-- /reloadconfig
-- /setconfig <key> <value>
-- /getconfig <key>
-- /listtemplates
-- /edittext <template_name>
-- /setmedia <template_name>
-- /removemedia <template_name>
-- /addbutton <template_name> <label> <callback>
-- /removebutton <template_name> <index>
-- /showtemplate <template_name>
-- /broadcast <target> <message>
-- /stats
-
-## Broadcast targets
-
-- user <user_id>
-- group <group_id>
-- channel <channel_id>
-- all_groups
-- all_channels
-- all_users
-- everyone
-
-Example:
-
-```bash
-/broadcast all_users Hello everyone!
-/broadcast all_groups Maintenance in 10 minutes.
-/broadcast user 123456789 Hello.
-```
-
-## Dynamic config system
-
-The bot stores templates and settings in SQLite, so you can change:
-- help text
-- admin help text
-- welcome screens
-- media
-- buttons
-- titles
-- channel IDs
-- quotas
-- timer values
-
-Commands:
-- /edittext <template_name>
-- /setmedia <template_name>
-- /removemedia <template_name>
-- /addbutton <template_name> <label> <callback>
-- /removebutton <template_name> <index>
-
-Example:
-
-```bash
-/edittext welcome
-/addbutton welcome Search search:demo
-/addbutton welcome Help help:main
-```
-
-## Formatting placeholders
-
-You can use:
-- {date}
-- {time}
-- {bot_title}
-- {bot_username}
-- {chat_title}
-
-Example:
+## Project Structure
 
 ```text
-Welcome to {bot_title}
-Today is {date}
-Time: {time}
-Chat: {chat_title}
+fantastic-eureka/
+├── app/
+│   ├── __init__.py
+│   ├── bot.py
+│   ├── config.py
+│   └── db.py
+├── modules/
+│   ├── __init__.py
+│   ├── database/
+│   │   ├── __init__.py
+│   │   └── file_db.py
+│   └── goodreads_scraper.py
+├── data/
+│   └── bot.db
+├── .env.example
+├── main.py
+├── requirements.txt
+├── render.yaml
+└── README.md
 ```
 
-## Inline button callback patterns
+## Installation
 
-Use callback strings like:
-- search:file_123
-- request:status_done
-- approve:upload_123
-- role:volunteer
-- help:main
-- cancel:queue_1
-- pause:queue_1
-- resume:queue_1
-- ban:user_123
+1. Clone the repository.
+2. Create a virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
 
-## Search and delivery flow
+## Environment Variables
 
-1. User searches for a file using /search
-2. Bot searches indexed files by title, author, and caption
-3. Bot displays inline buttons with result names
-4. User clicks a result
-5. Bot verifies:
-   - user started chat with bot
-   - helper bot is allowed
-   - file exists
-6. Bot sends file to posting channel
-7. Bot also sends file to user DM if allowed
-8. Bot informs the user with channel link/message id
-9. File is auto-deleted after X seconds
-10. Search quota is deducted only on successful file delivery
+Update `.env` with your real values:
 
-## Request flow
+```env
+BOT_TOKEN=your_bot_token_here
+ADMIN_IDS=123456789
+STORAGE_GROUP_ID=-1001234567890
+LOGGER_GROUP_ID=-1001234567891
+INDEX_LOG_TOPIC_ID=12345
+```
 
-1. User sends /request Title Author
-2. Bot validates input
-3. Bot saves request in database
-4. Request is posted to request log channel
-5. Moderator/Admin/Owner updates status
-6. Request quota is consumed only on successful posting
+### Notes
 
-## Indexing flow
+- `BOT_TOKEN` is required for the bot to start.
+- `ADMIN_IDS` is a comma-separated list of admin Telegram user IDs.
+- `STORAGE_GROUP_ID` is where indexed ebooks are uploaded.
+- `LOGGER_GROUP_ID` is where log events can be sent.
+- `INDEX_LOG_TOPIC_ID` is optional if using a Telegram forum topic.
 
-1. Files are queued
-2. Max 10 at once
-3. After each batch, wait N seconds
-4. Continue until queue clears
-5. User files can have priority
-6. It can pause/resume/cancel
+## Running the Bot
 
-## Safety notes
+```bash
+python main.py
+```
 
-- Only admins/owners should use:
-  - /broadcast
-  - /ban
-  - /unban
-  - /setconfig
-  - /reloadconfig
-  - /addadmin
-  - /setrole commands
-- Do not expose arbitrary code execution through bot commands
-- Keep runtime config in a DB, not in Python source
-- Use admin IDs list to restrict sensitive actions
-- Keep posting channels and storage channels admin-only for the bot
+## Deploy to Render
 
-## Future work
+This project includes a `render.yaml` file for easy deployment on Render.
 
-- Add Goodreads scraping integration
-- Add file approval queues
-- Add indexing progress cards
-- Add per-channel indexing permissions
-- Add scheduled cleanup
-- Add web admin panel
-- Add multiple languages
+### Option 1: Deploy from GitHub with Render Blueprint
 
-This bot is structured to be scaled into a complete digital library bot system.
+1. Push this repository to GitHub.
+2. In Render, click New -> Blueprint.
+3. Select this repository.
+4. Render will read `render.yaml` and create the service automatically.
+
+### Option 2: Manual Render Web Service
+
+1. Create a new Web Service in Render.
+2. Connect this GitHub repository.
+3. Use these settings:
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `python main.py`
+4. Add the same environment variables from `.env.example` in the Render dashboard.
+5. Click Create Web Service.
+
+### Render configuration
+
+The included `render.yaml` defines:
+
+```yaml
+services:
+  - type: web
+    name: fantastic-eureka
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+```
+
+> Note: Because this bot uses long-lived polling, it should run as a persistent web service on Render.
+
+## Common Commands
+
+### User Commands
+
+- `/start`
+- `/help`
+- `/search <keyword>`
+- `/request <title> <author>`
+
+### Admin Commands
+
+- `/adminhelp`
+- `/stats`
+- `/ban <user>`
+- `/unban <user>`
+- `/addvol <user>`
+- `/addprom <user>`
+- `/addmod <user>`
+- `/addadmin <user>`
+- `/reloadconfig`
+- `/setconfig <key> <value>`
+- `/getconfig <key>`
+- `/edittext <template_name>`
+- `/setmedia <template_name>`
+- `/removemedia <template_name>`
+- `/addbutton <template_name> <label> <callback>`
+- `/removebutton <template_name> <index>`
+- `/listtemplates`
+- `/showtemplate <template_name>`
+- `/broadcast <target> <message>`
+- `/broadcast_confirm everyone <message>`
+
+## Goodreads Indexing
+
+When an ebook file with an allowed extension is uploaded, the bot attempts to:
+
+- validate the file extension
+- clean the filename for search
+- query Goodreads metadata
+- index the file into the storage group
+- save metadata in the local SQLite database
+
+Supported ebook extensions:
+
+- `.epub`
+- `.pdf`
+- `.mobi`
+
+## Database
+
+The bot uses SQLite and creates the database automatically at:
+
+```text
+data/bot.db
+```
+
+## Notes
+
+- The bot expects the data folder to exist.
+- The app will create SQLite tables automatically on startup.
+- If `BOT_TOKEN` is missing, the bot exits with a runtime error.
+
+## License
+
+This project is provided as-is for educational and personal use unless otherwise specified.
